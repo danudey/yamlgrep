@@ -10,7 +10,10 @@ name: Upload Python Package
 
 on:
   release:
-    types: [published]
+    types:
+      - published
+      - released
+      - edited
 
 permissions:
   contents: read
@@ -21,16 +24,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.13"
-
+          version: "latest"
       - name: Build release distributions
-        run: |
-          # NOTE: put your own distribution build steps here.
-          python -m pip install build
-          python -m build
+        run: uv build
 
       - name: Upload distributions
         uses: actions/upload-artifact@v4
@@ -50,12 +49,7 @@ jobs:
     # For more information, see: https://docs.github.com/en/actions/deployment/targeting-different-environments/using-environments-for-deployment#deployment-protection-rules
     environment:
       name: pypi
-      # OPTIONAL: uncomment and update to include your PyPI project URL in the deployment status:
       url: https://pypi.org/p/yamlgrep
-      #
-      # ALTERNATIVE: if your GitHub Release name is the PyPI project version string
-      # ALTERNATIVE: exactly, uncomment the following line instead:
-      # url: https://pypi.org/project/yamlgrep/${{ github.event.release.name }}
 
     steps:
       - name: Retrieve release distributions
