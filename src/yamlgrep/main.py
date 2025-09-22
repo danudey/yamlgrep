@@ -73,7 +73,7 @@ def handle_obj(obj, path=""):
         raise ValueError(f"Got unhandled type {type(obj)} at path {path}")
 
 
-def iter_files(files):
+def iter_files(files, recurse=False):
     if files:
         matching_files = set()
         for filename in files:
@@ -90,20 +90,36 @@ def iter_files(files):
                         file=sys.stderr,
                     )
                     continue
-                if path.is_dir() or path.is_socket():
+                if path.is_socket():
                     print(
-                        f"yamlparse: {filename}: Target files must be actual files",
+                        f"yamlparse: {filename}: Can't grep sockets",
                         file=sys.stderr,
                     )
+                    continue
+                if path.is_dir():
+                    if recurse:
+                        for sub_file in path.glob("**/*.yml"):
+                            yield sub_file.as_posix(), sub_file.open()
+                        for sub_file in path.glob("**/*.yaml"):
+                            yield sub_file.as_posix(), sub_file.open()
+                    else:
+                        print(
+                            f"yamlparse: skipping directory {path}",
+                            file=sys.stderr
+                        )
                     continue
                 yield filename, path.open()
     else:
         yield "<stdin>", sys.stdin
 
 
-def match_fixed(needle, haystack):
-    if needle in haystack:
-        return needle
+def match_fixed(needle: str, haystack: str, case_insensitive=False):
+    if case_insensitive:
+        if needle.lower() in haystack.lower():
+            return needle
+    else:
+        if needle in haystack:
+            return needle
 
 
 # Note that we insert colours here in every case, but if our Console()
@@ -145,7 +161,16 @@ def main():
         help="Pattern is a fixed string",
     )
 
-    # Whether or not to print the filename
+    # TODO: maybe we should default to searching recursively if no files are
+    # specified and stdin is a tty?
+    parser.add_argument(
+        "-r",
+        "--recurse",
+        action="store_true",
+        default=False,
+        help="Descend into directories passed on the command-line",
+    )
+
     parser.add_argument(
         "-H",
         "--filename",
@@ -200,7 +225,7 @@ def main():
         case ShowFilename.NEVER:
             show_fnames = False
         case ShowFilename.AUTO:
-            if len(args.input_files) > 1:
+            if len(args.input_files) > 1 or args.recurse:
                 show_fnames = True
 
     match args.show_doc_number:
@@ -217,7 +242,10 @@ def main():
         matcher = match_regexp
 
     try:
-        for filename, file_obj in iter_files(args.input_files):
+        for filename, file_obj in iter_files(args.input_files, recurse=args.recurse):
+            if had_data and is_tty:
+                print()
+            had_data = False
             data = list(yaml.safe_load_all(file_obj))
             if args.show_doc_number == ShowFilename.AUTO:
                 show_docno = len(data) > 1
