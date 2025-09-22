@@ -67,6 +67,8 @@ def handle_obj(obj, path=""):
             yield from handle_obj(val, new_path)
     elif isinstance(obj, (str, int, float, bool)):
         yield path, obj
+    elif obj is None:
+        yield path, obj
     else:
         raise ValueError(f"Got unhandled type {type(obj)}")
 
