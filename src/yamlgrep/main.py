@@ -70,7 +70,7 @@ def handle_obj(obj, path=""):
     elif obj is None:
         yield path, obj
     else:
-        raise ValueError(f"Got unhandled type {type(obj)}")
+        raise ValueError(f"Got unhandled type {type(obj)} at path {path}")
 
 
 def iter_files(files):
