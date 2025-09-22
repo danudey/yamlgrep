@@ -81,6 +81,11 @@ def iter_files(files, recurse=False):
                 continue
             matching_files.add(filename)
             if filename == "-":
+                if sys.stdin.isatty():
+                    print(
+                        f"yamlparse: reading from stdin but it's a tty?",
+                        file=sys.stderr
+                    )
                 yield "<stdin>", sys.stdin
             else:
                 path = pathlib.Path(filename)
@@ -110,6 +115,11 @@ def iter_files(files, recurse=False):
                     continue
                 yield filename, path.open()
     else:
+        if sys.stdin.isatty():
+            print(
+                f"yamlparse: reading from stdin but it's a tty?",
+                file=sys.stderr
+            )
         yield "<stdin>", sys.stdin
 
 
