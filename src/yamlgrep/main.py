@@ -81,6 +81,11 @@ def iter_files(files, recurse=False):
                 continue
             matching_files.add(filename)
             if filename == "-":
+                if sys.stdin.isatty():
+                    print(
+                        f"yamlparse: reading from stdin but it's a tty?",
+                        file=sys.stderr
+                    )
                 yield "<stdin>", sys.stdin
             else:
                 path = pathlib.Path(filename)
@@ -110,6 +115,11 @@ def iter_files(files, recurse=False):
                     continue
                 yield filename, path.open()
     else:
+        if sys.stdin.isatty():
+            print(
+                f"yamlparse: reading from stdin but it's a tty?",
+                file=sys.stderr
+            )
         yield "<stdin>", sys.stdin
 
 
@@ -142,6 +152,7 @@ def match_regexp(needle, haystack, case_insensitive=False):
 
 def main():
     show_fnames = False
+    had_data = False
     is_tty = sys.stdout.isatty()
     parser = argparse.ArgumentParser(
         "yamlgrep",
@@ -149,8 +160,10 @@ def main():
         formatter_class=RawDescriptionRichHelpFormatter,
         conflict_handler="resolve",
     )
+
     parser.set_defaults(
-        show_filename=ShowFilename.AUTO, show_doc_number=ShowDocumentNumber.AUTO
+        show_filename=ShowFilename.AUTO,
+        show_doc_number=ShowDocumentNumber.AUTO
     )
 
     parser.add_argument(
@@ -159,6 +172,22 @@ def main():
         action="store_true",
         default=False,
         help="Pattern is a fixed string",
+    )
+
+    parser.add_argument(
+        "-i",
+        "--case-insensitive",
+        action="store_true",
+        default=False,
+        help="Do a case-insensitive match",
+    )
+
+    # I hate when long-running scripts provide no output
+    parser.add_argument(
+        "--print-no-match",
+        action="store_true",
+        default=False,
+        help="Print if a file did not contain a match",
     )
 
     # TODO: maybe we should default to searching recursively if no files are
@@ -171,6 +200,7 @@ def main():
         help="Descend into directories passed on the command-line",
     )
 
+    # Whether or not to print the filename (default is to print it if there's more than one input)
     parser.add_argument(
         "-H",
         "--filename",
@@ -180,7 +210,7 @@ def main():
         help=f"Show the filename for each matching line; WHEN is [{', '.join(ShowFilename)}]",
     )
 
-    # Whether or not to show the document number
+    # Whether or not to show the document number (default is to print it if there's more than one document in the file)
     parser.add_argument(
         "-D",
         "--doc-number",
@@ -190,6 +220,7 @@ def main():
         help=f"Show the number of the yaml document in multi-document files; WHEN is [{', '.join(ShowDocumentNumber)}]",
     )
 
+    # Whether or not to use colour (default is to do so if output is a tty)
     parser.add_argument(
         "-c",
         "--color",
@@ -200,7 +231,10 @@ def main():
         help=f"Whether or not to use colour to highlight matches; WHEN is [{', '.join(UseColour)}]",
     )
 
+    # The pattern can be either a regexp or a fixed string
     parser.add_argument("pattern", help="The pattern to search for")
+
+    # Zero or more input files - if no input is specified, read from stdin
     parser.add_argument(
         "input_files",
         nargs="*",
@@ -264,15 +298,19 @@ def main():
 
                 doc_was_matched = doc_matched
                 doc_matched = False
-                for path, val in handle_obj(document):
-                    res = matcher(args.pattern, str(val))
-                    if res:
-                        if doc_was_matched and not doc_matched:
-                            console.print("---")
-                        doc_matched = True
-                        console.print(f"{prefix}[blue]{path}[/blue] {res}")
-            if is_tty:
-                print()
+                try:
+                    for path, val in handle_obj(document):
+                        res = matcher(args.pattern, str(val))
+                        if res:
+                            had_data = True
+                            if doc_was_matched and not doc_matched:
+                                console.print("---")
+                            doc_matched = True
+                            console.print(f"{prefix}[blue]{path}[/blue] {res}")
+                except ValueError as ex:
+                    print(f"Error parsing file {filename} doc {doc_no}: {ex}", file=sys.stderr)
+            if args.print_no_match and not had_data:
+                print(f"yamllint: file {filename} had no matches", file=sys.stderr)
 
     except KeyboardInterrupt:
         return
