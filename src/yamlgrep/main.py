@@ -30,6 +30,9 @@ where the value was found (in yq-compatible syntax, e.g. .1.foo.bar.12).
 Multiple files can be specified on the command line; if none are provided, the default
 is to read from stdin. If you want to read from one or more files *and* stdin, pass `-`
 as a filename. Each file will only be processed once.
+
+Note that due to how yaml files can contain multi-line values, regular expression wildcards
+like `.*` will always perform multi-line matches.
 """
 
 console = Console(highlight=False)
@@ -101,8 +104,13 @@ def match_fixed(needle, haystack):
         return needle
 
 
-def match_regexp(needle, haystack):
-    pat = re.compile(needle)
+# Note that we insert colours here in every case, but if our Console()
+# is configured not to use colours they won't be output
+def match_regexp(needle, haystack, case_insensitive=False):
+    flags = re.MULTILINE | re.DOTALL
+    if case_insensitive:
+        flags = flags | re.IGNORECASE
+    pat = re.compile(needle, flags)
     if res := pat.search(haystack):
         start, end = res.span()
         groups = []
