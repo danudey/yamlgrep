@@ -9,10 +9,10 @@ import argparse
 # from ... stdlib imports
 from enum import StrEnum, auto
 from types import GeneratorType
+from typing import Optional
 
 # third-party imports
 import yaml
-
 # from ... third-party imports
 from rich.color import ColorSystem
 from rich.console import Console
@@ -84,7 +84,7 @@ def iter_files(files, recurse=False):
                 if sys.stdin.isatty():
                     print(
                         f"yamlparse: reading from stdin but it's a tty?",
-                        file=sys.stderr
+                        file=sys.stderr,
                     )
                 yield "<stdin>", sys.stdin
             else:
@@ -108,47 +108,69 @@ def iter_files(files, recurse=False):
                         for sub_file in path.glob("**/*.yaml"):
                             yield sub_file.as_posix(), sub_file.open()
                     else:
-                        print(
-                            f"yamlparse: skipping directory {path}",
-                            file=sys.stderr
-                        )
+                        print(f"yamlparse: skipping directory {path}", file=sys.stderr)
                     continue
                 yield filename, path.open()
     else:
         if sys.stdin.isatty():
-            print(
-                f"yamlparse: reading from stdin but it's a tty?",
-                file=sys.stderr
-            )
+            print(f"yamlparse: reading from stdin but it's a tty?", file=sys.stderr)
         yield "<stdin>", sys.stdin
 
 
-def match_fixed(needle: str, haystack: str, case_insensitive=False):
+def match_bool(needle: str, haystack: bool) -> bool:
+    if needle.lower() in ("true", "yes", "on"):
+        needle_val = True
+    elif needle.lower() in ("false", "no", "off"):
+        needle_val = False
+    else:
+        return False
+    return needle_val == haystack
+
+
+def match_fixed(
+    needle: str, haystack: str | int | float | bool, case_insensitive=False
+) -> Optional[str]:
+    stack_str = str(haystack)
+    if isinstance(haystack, bool):
+        result = match_bool(needle, haystack)
+        if result:
+            return needle
+
     if case_insensitive:
-        if needle.lower() in haystack.lower():
+        if needle.lower() in stack_str.lower():
             return needle
     else:
-        if needle in haystack:
+        if needle in stack_str:
             return needle
 
 
 # Note that we insert colours here in every case, but if our Console()
 # is configured not to use colours they won't be output
-def match_regexp(needle, haystack, case_insensitive=False):
+def match_regexp(
+    needle: str, haystack: str | int | float | bool, case_insensitive=False
+) -> Optional[str]:
+    if isinstance(haystack, bool):
+        result = match_bool(needle, haystack)
+        if result:
+            return str(haystack)
+
+    haystr = str(haystack)
+
     flags = re.MULTILINE | re.DOTALL
     if case_insensitive:
         flags = flags | re.IGNORECASE
     pat = re.compile(needle, flags)
-    if res := pat.search(haystack):
+    if res := pat.search(haystr):
         start, end = res.span()
         groups = []
-        groups.append(haystack[:start])
+        groups.append(haystr[:start])
         groups.append("[red]")
-        groups.append(haystack[start:end])
+        groups.append(haystr[start:end])
         groups.append("[/red]")
-        groups.append(haystack[end:])
+        groups.append(haystr[end:])
 
         return "".join(groups)
+
 
 def main():
     show_fnames = False
@@ -162,8 +184,7 @@ def main():
     )
 
     parser.set_defaults(
-        show_filename=ShowFilename.AUTO,
-        show_doc_number=ShowDocumentNumber.AUTO
+        show_filename=ShowFilename.AUTO, show_doc_number=ShowDocumentNumber.AUTO
     )
 
     parser.add_argument(
@@ -300,7 +321,7 @@ def main():
                 doc_matched = False
                 try:
                     for path, val in handle_obj(document):
-                        res = matcher(args.pattern, str(val))
+                        res = matcher(args.pattern, val)
                         if res:
                             had_data = True
                             if doc_was_matched and not doc_matched:
@@ -308,7 +329,10 @@ def main():
                             doc_matched = True
                             console.print(f"{prefix}[blue]{path}[/blue] {res}")
                 except ValueError as ex:
-                    print(f"Error parsing file {filename} doc {doc_no}: {ex}", file=sys.stderr)
+                    print(
+                        f"Error parsing file {filename} doc {doc_no}: {ex}",
+                        file=sys.stderr,
+                    )
             if args.print_no_match and not had_data:
                 print(f"yamllint: file {filename} had no matches", file=sys.stderr)
 
