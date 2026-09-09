@@ -12,6 +12,30 @@ thismanifest.yaml:1: .spec.containers.0.image foo.io/eieio/myimg:v1.31.1
 thatmanifest.yaml:8: .spec.containers.0.image foo.io/eieio/myimg:v1.32.4
 ```
 
+## Matching keys
+
+By default only values are searched. Pass `-k` to match key names as well, or `--match keys` to match key names only:
+
+```
+$ yamlgrep -k name thismanifest.yaml
+.metadata.name my-deployment
+.spec.containers.0.name myimg
+
+$ yamlgrep --match keys labels thismanifest.yaml
+.metadata.labels.app myapp
+.metadata.labels.tier web
+```
+
+A key matches if *any* key in the path to a value matches the pattern, so `--match keys labels` shows everything underneath any `labels` key. To match only the last key in the path instead, pass `--last-key` (which implies `-k` unless you also pass `--match`):
+
+```
+$ yamlgrep --last-key name thismanifest.yaml
+.metadata.name my-deployment
+.spec.containers.0.name myimg
+```
+
+With `--last-key`, the pattern `metadata` no longer matches `.metadata.name`, since `metadata` isn't the last key in that path.
+
 The `--help` is pretty good in explaining things.
 
 ## Requirements
