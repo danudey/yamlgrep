@@ -36,6 +36,15 @@ $ yamlgrep --last-key name thismanifest.yaml
 
 With `--last-key`, the pattern `metadata` no longer matches `.metadata.name`, since `metadata` isn't the last key in that path.
 
+When a key matched by `--last-key` holds a mapping or a list, the whole subtree underneath it is printed once, as an indented yaml block, instead of once per value inside it:
+
+```
+$ yamlgrep --last-key labels thismanifest.yaml
+.metadata.labels:
+    app: myapp
+    tier: web
+```
+
 The `--help` is pretty good in explaining things.
 
 ## Requirements
