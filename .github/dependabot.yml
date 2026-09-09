@@ -1,0 +1,56 @@
+version: 2
+
+# Keeps the actions in .github/workflows current. They are pinned to commit
+# SHAs, which nothing updates on its own and which no human is going to notice
+# has gone stale; Dependabot rewrites both the SHA and the version comment
+# beside it, so the pin stays honest.
+updates:
+  - package-ecosystem: github-actions
+    # For this ecosystem "/" means .github/workflows, not the repository root.
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    # pr-title.yml requires a conventional commit title, and Dependabot's
+    # default ("Bump x from a to b") is not one, so every update would open a
+    # pull request that immediately fails its own check. This makes the titles
+    # read "ci(deps): bump ...".
+    commit-message:
+      prefix: ci
+      include: scope
+    # One pull request for all of them rather than one each. There are two
+    # actions here; separate pull requests would be noise.
+    groups:
+      actions:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - ci
+
+  # The Go module. There is one go.mod at the root covering the examples too,
+  # so "/" is the whole thing.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    # "build" rather than "fix": a routine dependency bump should not by
+    # itself cut a release, and release-please keeps build out of the
+    # changelog. Change this to "fix" if you would rather every bump reach
+    # consumers as a patch release. Dependabot appends the scope itself, so
+    # these read "build(deps): bump ..." for the two runtime dependencies.
+    commit-message:
+      prefix: build
+      include: scope
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - go

@@ -27,6 +27,13 @@ we output `filename:docno: nodepath matchingval` where `docno` is the number of 
 document within the file (if there are multiple) and nodepath is the path to the node
 where the value was found (in yq-compatible syntax, e.g. .1.foo.bar.12).
 
+By default only values are searched; pass `-k` to match key names as well, or
+`--match keys` to match key names only. A key matches if any key in the path to
+a value matches the pattern, so `--match keys labels` will show everything
+underneath any `labels` key. Pass `--last-key` to match only the last key in
+the path, so that `--last-key name` matches `.metadata.name` but not
+`.metadata.name.first`.
+
 Multiple files can be specified on the command line; if none are provided, the default
 is to read from stdin. If you want to read from one or more files *and* stdin, pass `-`
 as a filename. Each file will only be processed once.
@@ -56,19 +63,38 @@ class UseColour(StrEnum):
     NEVER = auto()
 
 
-def handle_obj(obj, path=""):
+class MatchIn(StrEnum):
+    VALUES = auto()
+    KEYS = auto()
+    BOTH = auto()
+
+
+# Which keys in the path a key match can be satisfied by: any of them, or only
+# the last (i.e. the key the value itself hangs off).
+class KeyScope(StrEnum):
+    ANY = auto()
+    LAST = auto()
+
+
+# Along with the path and the value we yield the dictionary keys which make up
+# that path, as a list of (offset, key) pairs, where `offset` is the position of
+# that key within the path string. List indices aren't keys, so they're not
+# included; this lets us match (and highlight) only the parts of a path which
+# are actually key names.
+def handle_obj(obj, path="", keys=()):
     if isinstance(obj, (list, GeneratorType)):
         for k, val in enumerate(obj):
             new_path = f"{path}.{k}"
-            yield from handle_obj(val, new_path)
+            yield from handle_obj(val, new_path, keys)
     elif isinstance(obj, dict):
         for k, val in obj.items():
-            new_path = f"{path}.{k}"
-            yield from handle_obj(val, new_path)
+            key = str(k)
+            new_path = f"{path}.{key}"
+            yield from handle_obj(val, new_path, (*keys, (len(path) + 1, key)))
     elif isinstance(obj, (str, int, float, bool)):
-        yield path, obj
+        yield path, keys, obj
     elif obj is None:
-        yield path, obj
+        yield path, keys, obj
     else:
         raise ValueError(f"Got unhandled type {type(obj)} at path {path}")
 
@@ -172,6 +198,38 @@ def match_regexp(
         return "".join(groups)
 
 
+# Keys are always strings, so we can highlight the matching part of the key
+# itself rather than relying on what the value matchers hand back.
+def match_key(
+    needle: str, key: str, fixed_strings=False, case_insensitive=False
+) -> Optional[str]:
+    if fixed_strings:
+        haystack = key.lower() if case_insensitive else key
+        pattern = needle.lower() if case_insensitive else needle
+        start = haystack.find(pattern)
+        if start < 0:
+            return None
+        end = start + len(pattern)
+    else:
+        flags = re.MULTILINE | re.DOTALL
+        if case_insensitive:
+            flags = flags | re.IGNORECASE
+        res = re.compile(needle, flags).search(key)
+        if not res:
+            return None
+        start, end = res.span()
+
+    return f"{key[:start]}[red]{key[start:end]}[/red]{key[end:]}"
+
+
+# Replace each matching key in the path with its highlighted version; we work
+# from the end of the path backwards so that the offsets stay valid as we go.
+def highlight_path(path: str, key_matches: list[tuple[int, str, str]]) -> str:
+    for start, key, highlighted in reversed(key_matches):
+        path = f"{path[:start]}{highlighted}{path[start + len(key):]}"
+    return path
+
+
 def main():
     show_fnames = False
     had_data = False
@@ -201,6 +259,48 @@ def main():
         action="store_true",
         default=False,
         help="Do a case-insensitive match",
+    )
+
+    # Whether to match against values, key names, or both. `-k` is a shorthand
+    # for `--match both`, since matching keys *as well as* values is the common
+    # case; note that -k can't take an optional value of its own, since argparse
+    # would then swallow the pattern (`yamlgrep -k foo`) as that value.
+    # match_in defaults to None so that we can tell later whether it was given
+    # explicitly; --last-key implies matching keys if it wasn't.
+    parser.set_defaults(match_in=None, key_scope=KeyScope.ANY)
+
+    parser.add_argument(
+        "--match",
+        dest="match_in",
+        choices=MatchIn,
+        metavar="WHAT",
+        help=f"What to match the pattern against; WHAT is one of ({', '.join(MatchIn)}) (default: {MatchIn.VALUES}, or {MatchIn.BOTH} if --last-key is given)",
+    )
+
+    parser.add_argument(
+        "-k",
+        "--keys",
+        dest="match_in",
+        action="store_const",
+        const=MatchIn.BOTH,
+        help=f"Match against key names as well as values (same as --match {MatchIn.BOTH})",
+    )
+
+    # Whether a key match can come from anywhere in the path, or only from its
+    # last component
+    parser.add_argument(
+        "--key-scope",
+        choices=KeyScope,
+        metavar="WHAT",
+        help=f"Which part of the path a key match can come from; WHAT is one of ({', '.join(KeyScope)}) (default: {KeyScope.ANY})",
+    )
+
+    parser.add_argument(
+        "--last-key",
+        dest="key_scope",
+        action="store_const",
+        const=KeyScope.LAST,
+        help=f"Only match the last component of a key path (same as --key-scope {KeyScope.LAST})",
     )
 
     # I hate when long-running scripts provide no output
@@ -296,6 +396,15 @@ def main():
     else:
         matcher = match_regexp
 
+    if args.match_in is None:
+        if args.key_scope == KeyScope.LAST:
+            args.match_in = MatchIn.BOTH
+        else:
+            args.match_in = MatchIn.VALUES
+
+    match_values = args.match_in in (MatchIn.VALUES, MatchIn.BOTH)
+    match_keys = args.match_in in (MatchIn.KEYS, MatchIn.BOTH)
+
     try:
         for filename, file_obj in iter_files(args.input_files, recurse=args.recurse):
             if had_data and is_tty:
@@ -320,14 +429,38 @@ def main():
                 doc_was_matched = doc_matched
                 doc_matched = False
                 try:
-                    for path, val in handle_obj(document):
-                        res = matcher(args.pattern, val)
-                        if res:
+                    for path, keys, val in handle_obj(document):
+                        res = None
+                        if match_values:
+                            res = matcher(
+                                args.pattern,
+                                val,
+                                case_insensitive=args.case_insensitive,
+                            )
+
+                        key_matches = []
+                        if match_keys:
+                            if args.key_scope == KeyScope.LAST:
+                                candidates = keys[-1:]
+                            else:
+                                candidates = keys
+                            for offset, key in candidates:
+                                if highlighted := match_key(
+                                    args.pattern,
+                                    key,
+                                    fixed_strings=args.fixed_strings,
+                                    case_insensitive=args.case_insensitive,
+                                ):
+                                    key_matches.append((offset, key, highlighted))
+
+                        if res or key_matches:
                             had_data = True
                             if doc_was_matched and not doc_matched:
                                 console.print("---")
                             doc_matched = True
-                            console.print(f"{prefix}[blue]{path}[/blue] {res}")
+                            out_path = highlight_path(path, key_matches)
+                            out_val = res if res else str(val)
+                            console.print(f"{prefix}[blue]{out_path}[/blue] {out_val}")
                 except ValueError as ex:
                     print(
                         f"Error parsing file {filename} doc {doc_no}: {ex}",

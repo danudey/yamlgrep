@@ -1,0 +1,37 @@
+name: audit
+
+# Advisories appear without anything in this repository changing, so this runs
+# on a schedule as well as on pull requests. GitHub emails the repository owner
+# when a scheduled workflow fails on the default branch.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Monday mornings, off the top of the hour, which GitHub asks for.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "latest"
+      - run: uv audit --preview-features audit-command --output-format sarif > uv-audit.sarif
+        continue-on-error: true
+      - name: Upload analysis results to GitHub
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: uv-audit.sarif
+          wait-for-processing: true
