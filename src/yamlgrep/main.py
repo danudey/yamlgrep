@@ -16,6 +16,7 @@ import yaml
 # from ... third-party imports
 from rich.color import ColorSystem
 from rich.console import Console
+from rich.markup import escape
 from rich_argparse import RawDescriptionRichHelpFormatter
 
 description = """
@@ -32,7 +33,8 @@ By default only values are searched; pass `-k` to match key names as well, or
 a value matches the pattern, so `--match keys labels` will show everything
 underneath any `labels` key. Pass `--last-key` to match only the last key in
 the path, so that `--last-key name` matches `.metadata.name` but not
-`.metadata.name.first`.
+`.metadata.name.first`. When a key matched that way holds a mapping or a list,
+the subtree underneath it is printed as an indented yaml block.
 
 Multiple files can be specified on the command line; if none are provided, the default
 is to read from stdin. If you want to read from one or more files *and* stdin, pass `-`
@@ -95,6 +97,29 @@ def handle_obj(obj, path="", keys=()):
         yield path, keys, obj
     elif obj is None:
         yield path, keys, obj
+    else:
+        raise ValueError(f"Got unhandled type {type(obj)} at path {path}")
+
+
+# The --key-scope=last version of handle_obj: a node matches when its *own* key
+# matches, so we test each key on the way down and yield the whole node when it
+# does, without descending any further into it. That means a matching key whose
+# value is a mapping or a list is reported once, as a subtree, instead of once
+# per leaf underneath it.
+def handle_last_key(obj, key_test, path="", key=None):
+    if key is not None and (highlighted := key_test(key)):
+        yield path, [(len(path) - len(key), key, highlighted)], obj
+        return
+
+    if isinstance(obj, (list, GeneratorType)):
+        for k, val in enumerate(obj):
+            yield from handle_last_key(val, key_test, f"{path}.{k}")
+    elif isinstance(obj, dict):
+        for k, val in obj.items():
+            new_key = str(k)
+            yield from handle_last_key(val, key_test, f"{path}.{new_key}", new_key)
+    elif isinstance(obj, (str, int, float, bool)) or obj is None:
+        yield path, [], obj
     else:
         raise ValueError(f"Got unhandled type {type(obj)} at path {path}")
 
@@ -220,6 +245,28 @@ def match_key(
         start, end = res.span()
 
     return f"{key[:start]}[red]{key[start:end]}[/red]{key[end:]}"
+
+
+CONTAINER_TYPES = (dict, list, GeneratorType)
+
+
+# PyYAML doesn't indent sequences underneath the key they belong to, which makes
+# a dumped subtree harder to read than the file it came from
+class BlockDumper(yaml.SafeDumper):
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
+
+
+# When a matching key holds a mapping or a list we print the subtree underneath
+# it as an indented yaml block. Nothing in there is highlighted, so we escape it
+# rather than let rich treat any brackets in it as markup.
+def format_subtree(node, indent="    ") -> str:
+    if isinstance(node, GeneratorType):
+        node = list(node)
+    dumped = yaml.dump(
+        node, Dumper=BlockDumper, default_flow_style=False, sort_keys=False
+    )
+    return "\n".join(f"{indent}{line}" for line in dumped.rstrip("\n").splitlines())
 
 
 # Replace each matching key in the path with its highlighted version; we work
@@ -404,6 +451,15 @@ def main():
 
     match_values = args.match_in in (MatchIn.VALUES, MatchIn.BOTH)
     match_keys = args.match_in in (MatchIn.KEYS, MatchIn.BOTH)
+    last_key_mode = match_keys and args.key_scope == KeyScope.LAST
+
+    def key_test(key: str) -> Optional[str]:
+        return match_key(
+            args.pattern,
+            key,
+            fixed_strings=args.fixed_strings,
+            case_insensitive=args.case_insensitive,
+        )
 
     try:
         for filename, file_obj in iter_files(args.input_files, recurse=args.recurse):
@@ -429,29 +485,32 @@ def main():
                 doc_was_matched = doc_matched
                 doc_matched = False
                 try:
-                    for path, keys, val in handle_obj(document):
+                    if last_key_mode:
+                        nodes = handle_last_key(document, key_test)
+                    else:
+                        nodes = handle_obj(document)
+
+                    for path, keys, val in nodes:
+                        is_container = isinstance(val, CONTAINER_TYPES)
+
                         res = None
-                        if match_values:
+                        if match_values and not is_container:
                             res = matcher(
                                 args.pattern,
                                 val,
                                 case_insensitive=args.case_insensitive,
                             )
 
-                        key_matches = []
-                        if match_keys:
-                            if args.key_scope == KeyScope.LAST:
-                                candidates = keys[-1:]
-                            else:
-                                candidates = keys
-                            for offset, key in candidates:
-                                if highlighted := match_key(
-                                    args.pattern,
-                                    key,
-                                    fixed_strings=args.fixed_strings,
-                                    case_insensitive=args.case_insensitive,
-                                ):
-                                    key_matches.append((offset, key, highlighted))
+                        if last_key_mode:
+                            # handle_last_key does the key matching itself, so
+                            # that it knows when to stop descending
+                            key_matches = keys
+                        else:
+                            key_matches = []
+                            if match_keys:
+                                for offset, key in keys:
+                                    if highlighted := key_test(key):
+                                        key_matches.append((offset, key, highlighted))
 
                         if res or key_matches:
                             had_data = True
@@ -459,8 +518,21 @@ def main():
                                 console.print("---")
                             doc_matched = True
                             out_path = highlight_path(path, key_matches)
-                            out_val = res if res else str(val)
-                            console.print(f"{prefix}[blue]{out_path}[/blue] {out_val}")
+                            if is_container:
+                                subtree = format_subtree(val)
+                                if "\n" in subtree:
+                                    console.print(f"{prefix}[blue]{out_path}[/blue]:")
+                                    console.print(escape(subtree))
+                                else:
+                                    # an empty mapping or list fits on the line
+                                    console.print(
+                                        f"{prefix}[blue]{out_path}[/blue] {escape(subtree.strip())}"
+                                    )
+                            else:
+                                out_val = res if res else str(val)
+                                console.print(
+                                    f"{prefix}[blue]{out_path}[/blue] {out_val}"
+                                )
                 except ValueError as ex:
                     print(
                         f"Error parsing file {filename} doc {doc_no}: {ex}",
